@@ -1,0 +1,91 @@
+Source: haskell-hspec-core
+Maintainer: Debian Haskell Group <pkg-haskell-maintainers@lists.alioth.debian.org>
+Uploaders: Joachim Breitner <nomeata@debian.org>
+Priority: optional
+Section: haskell
+Rules-Requires-Root: no
+Build-Depends: debhelper (>= 10),
+ haskell-devscripts (>= 0.13),
+ cdbs,
+ ghc (>= 8.4.3),
+ ghc-prof,
+ libghc-hunit-dev (>= 1.6),
+ libghc-hunit-dev (<< 1.7),
+ libghc-hunit-prof,
+ libghc-quickcheck2-dev (>= 2.13.1),
+ libghc-quickcheck2-prof,
+ libghc-ansi-terminal-dev (>= 0.5),
+ libghc-ansi-terminal-prof,
+ libghc-call-stack-dev,
+ libghc-call-stack-prof,
+ libghc-clock-dev,
+ libghc-clock-prof,
+ libghc-hspec-expectations-dev (>= 0.8.2),
+ libghc-hspec-expectations-dev (<< 0.8.3),
+ libghc-hspec-expectations-prof,
+ libghc-quickcheck-io-dev (>= 0.2.0),
+ libghc-quickcheck-io-prof,
+ libghc-random-dev,
+ libghc-random-prof,
+ libghc-setenv-dev,
+ libghc-setenv-prof,
+ libghc-tf-random-dev,
+ libghc-tf-random-prof,
+Build-Depends-Indep: ghc-doc,
+ libghc-hunit-doc,
+ libghc-quickcheck2-doc,
+ libghc-ansi-terminal-doc,
+ libghc-call-stack-doc,
+ libghc-clock-doc,
+ libghc-hspec-expectations-doc,
+ libghc-quickcheck-io-doc,
+ libghc-random-doc,
+ libghc-setenv-doc,
+ libghc-tf-random-doc,
+Standards-Version: 4.1.4
+Homepage: http://hspec.github.io/
+Vcs-Browser: https://salsa.debian.org/haskell-team/DHG_packages/tree/master/p/haskell-hspec-core
+Vcs-Git: https://salsa.debian.org/haskell-team/DHG_packages.git [p/haskell-hspec-core]
+X-Description: testing Framework for Haskell
+ This package exposes internal types and functions that can be
+ used to extend Hspec's functionality.
+
+Package: libghc-hspec-core-dev
+Architecture: any
+Depends: ${haskell:Depends},
+ ${misc:Depends},
+ ${shlibs:Depends},
+Recommends: ${haskell:Recommends},
+Suggests: ${haskell:Suggests},
+Conflicts: ${haskell:Conflicts},
+Provides: ${haskell:Provides},
+Description: ${haskell:ShortDescription}${haskell:ShortBlurb}
+ ${haskell:LongDescription}
+ .
+ ${haskell:Blurb}
+
+Package: libghc-hspec-core-prof
+Architecture: any
+Depends: ${haskell:Depends},
+ ${misc:Depends},
+Recommends: ${haskell:Recommends},
+Suggests: ${haskell:Suggests},
+Conflicts: ${haskell:Conflicts},
+Provides: ${haskell:Provides},
+Description: ${haskell:ShortDescription}${haskell:ShortBlurb}
+ ${haskell:LongDescription}
+ .
+ ${haskell:Blurb}
+
+Package: libghc-hspec-core-doc
+Architecture: all
+Section: doc
+Depends: ${haskell:Depends},
+ ${misc:Depends},
+Recommends: ${haskell:Recommends},
+Suggests: ${haskell:Suggests},
+Conflicts: ${haskell:Conflicts},
+Description: ${haskell:ShortDescription}${haskell:ShortBlurb}
+ ${haskell:LongDescription}
+ .
+ ${haskell:Blurb}
