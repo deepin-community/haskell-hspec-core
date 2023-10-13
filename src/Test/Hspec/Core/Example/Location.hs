@@ -4,6 +4,7 @@ module Test.Hspec.Core.Example.Location (
 , extractLocation
 
 -- for testing
+, parseAssertionFailed
 , parseCallStack
 , parseLocation
 , parseSourceSpan
@@ -13,7 +14,6 @@ import           Prelude ()
 import           Test.Hspec.Core.Compat
 
 import           Control.Exception
-import           Data.List
 import           Data.Char
 import           Data.Maybe
 import           GHC.IO.Exception
@@ -31,6 +31,21 @@ extractLocation e =
   <|> locationFromPatternMatchFail e
   <|> locationFromRecConError e
   <|> locationFromIOException e
+  <|> locationFromNoMethodError e
+  <|> locationFromAssertionFailed e
+
+locationFromNoMethodError :: SomeException -> Maybe Location
+locationFromNoMethodError e = case fromException e of
+  Just (NoMethodError s) -> listToMaybe (words s) >>= parseSourceSpan
+  Nothing -> Nothing
+
+locationFromAssertionFailed :: SomeException -> Maybe Location
+locationFromAssertionFailed e = case fromException e of
+  Just (AssertionFailed loc) -> parseAssertionFailed loc
+  Nothing -> Nothing
+
+parseAssertionFailed :: String -> Maybe Location
+parseAssertionFailed loc = parseCallStack loc <|> parseSourceSpan loc
 
 locationFromErrorCall :: SomeException -> Maybe Location
 locationFromErrorCall e = case fromException e of
@@ -61,7 +76,11 @@ locationFromIOException e = case fromException e of
 
 fromPatternMatchFailureInDoExpression :: String -> Maybe Location
 fromPatternMatchFailureInDoExpression input =
+#if MIN_VERSION_base(4,16,0)
+  stripPrefix "Pattern match failure in 'do' block at " input >>= parseSourceSpan
+#else
   stripPrefix "Pattern match failure in do expression at " input >>= parseSourceSpan
+#endif
 
 parseCallStack :: String -> Maybe Location
 parseCallStack input = case reverse (lines input) of

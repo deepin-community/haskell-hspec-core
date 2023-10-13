@@ -6,6 +6,8 @@
 {-# LANGUAGE ExistentialQuantification #-}
 module Test.Hspec.Core.Formatters.Monad (
   Formatter (..)
+, Item(..)
+, Result(..)
 , FailureReason (..)
 , FormatM
 
@@ -13,11 +15,13 @@ module Test.Hspec.Core.Formatters.Monad (
 , getPendingCount
 , getFailCount
 , getTotalCount
+, getFinalCount
 
 , FailureRecord (..)
 , getFailMessages
 , usedSeed
 
+, printTimes
 , getCPUTime
 , getRealTime
 
@@ -44,39 +48,31 @@ import           Test.Hspec.Core.Compat
 import           Control.Monad.IO.Class
 
 import           Test.Hspec.Core.Formatters.Free
-import           Test.Hspec.Core.Example (FailureReason(..))
-import           Test.Hspec.Core.Util (Path)
-import           Test.Hspec.Core.Spec (Progress, Location)
 import           Test.Hspec.Core.Clock
+import           Test.Hspec.Core.Format
 
 data Formatter = Formatter {
 
-  headerFormatter :: FormatM ()
+-- | evaluated before a test run
+  formatterStarted :: FormatM ()
 
--- | evaluated before each test group
-, exampleGroupStarted :: [String] -> String -> FormatM ()
+-- | evaluated before each spec group
+, formatterGroupStarted :: Path -> FormatM ()
 
-, exampleGroupDone :: FormatM ()
+-- | evaluated after each spec group
+, formatterGroupDone :: Path -> FormatM ()
 
 -- | used to notify the progress of the currently evaluated example
---
--- /Note/: This is only called when interactive/color mode.
-, exampleProgress :: Path -> Progress -> FormatM ()
+, formatterProgress :: Path -> Progress -> FormatM ()
 
--- | evaluated after each successful example
-, exampleSucceeded :: Path -> String -> FormatM ()
+-- | evaluated before each spec item
+, formatterItemStarted :: Path -> FormatM ()
 
--- | evaluated after each failed example
-, exampleFailed :: Path -> String -> FailureReason -> FormatM ()
-
--- | evaluated after each pending example
-, examplePending :: Path -> String -> Maybe String -> FormatM ()
+-- | evaluated after each spec item
+, formatterItemDone :: Path -> Item -> FormatM ()
 
 -- | evaluated after a test run
-, failedFormatter :: FormatM ()
-
--- | evaluated after `failuresFormatter`
-, footerFormatter :: FormatM ()
+, formatterDone :: FormatM ()
 }
 
 data FailureRecord = FailureRecord {
@@ -89,7 +85,9 @@ data FormatF next =
     GetSuccessCount (Int -> next)
   | GetPendingCount (Int -> next)
   | GetFailMessages ([FailureRecord] -> next)
+  | GetFinalCount (Int -> next)
   | UsedSeed (Integer -> next)
+  | PrintTimes (Bool -> next)
   | GetCPUTime (Maybe Seconds -> next)
   | GetRealTime (Seconds -> next)
   | Write String next
@@ -108,7 +106,9 @@ instance Functor FormatF where -- deriving this instance would require GHC >= 7.
     GetSuccessCount next -> GetSuccessCount (fmap f next)
     GetPendingCount next -> GetPendingCount (fmap f next)
     GetFailMessages next -> GetFailMessages (fmap f next)
+    GetFinalCount next -> GetFinalCount (fmap f next)
     UsedSeed next -> UsedSeed (fmap f next)
+    PrintTimes next -> PrintTimes (fmap f next)
     GetCPUTime next -> GetCPUTime (fmap f next)
     GetRealTime next -> GetRealTime (fmap f next)
     Write s next -> Write s (f next)
@@ -131,7 +131,9 @@ data Environment m = Environment {
   environmentGetSuccessCount :: m Int
 , environmentGetPendingCount :: m Int
 , environmentGetFailMessages :: m [FailureRecord]
+, environmentGetFinalCount :: m Int
 , environmentUsedSeed :: m Integer
+, environmentPrintTimes :: m Bool
 , environmentGetCPUTime :: m (Maybe Seconds)
 , environmentGetRealTime :: m Seconds
 , environmentWrite :: String -> m ()
@@ -156,7 +158,9 @@ interpretWith Environment{..} = go
         GetSuccessCount next -> environmentGetSuccessCount >>= go . next
         GetPendingCount next -> environmentGetPendingCount >>= go . next
         GetFailMessages next -> environmentGetFailMessages >>= go . next
+        GetFinalCount next -> environmentGetFinalCount >>= go . next
         UsedSeed next -> environmentUsedSeed >>= go . next
+        PrintTimes next -> environmentPrintTimes >>= go . next
         GetCPUTime next -> environmentGetCPUTime >>= go . next
         GetRealTime next -> environmentGetRealTime >>= go . next
         Write s next -> environmentWrite s >> go next
@@ -186,6 +190,11 @@ getFailCount = length <$> getFailMessages
 getTotalCount :: FormatM Int
 getTotalCount = sum <$> sequence [getSuccessCount, getFailCount, getPendingCount]
 
+-- | Get the number of spec items that will have been encountered when this run
+-- completes (if it is not terminated early).
+getFinalCount :: FormatM Int
+getFinalCount = liftF (GetFinalCount id)
+
 -- | Get the list of accumulated failure messages.
 getFailMessages :: FormatM [FailureRecord]
 getFailMessages = liftF (GetFailMessages id)
@@ -193,6 +202,11 @@ getFailMessages = liftF (GetFailMessages id)
 -- | The random seed that is used for QuickCheck.
 usedSeed :: FormatM Integer
 usedSeed = liftF (UsedSeed id)
+
+-- | Return `True` if the user requested time reporting for individual spec
+-- items, `False` otherwise.
+printTimes :: FormatM Bool
+printTimes = liftF (PrintTimes id)
 
 -- | Get the used CPU time since the test run has been started.
 getCPUTime :: FormatM (Maybe Seconds)

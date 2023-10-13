@@ -1,13 +1,23 @@
 {-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-patterns #-}
 {-# OPTIONS_GHC -fno-warn-missing-fields #-}
+{-# OPTIONS_GHC -fno-warn-overlapping-patterns #-}
+{-# OPTIONS_GHC -fno-warn-missing-methods #-}
+{-# OPTIONS_GHC -O0 #-}
 module Test.Hspec.Core.Example.LocationSpec (spec) where
 
+import           Prelude ()
 import           Helper
+
 import           Control.Exception
 
 import           Test.Hspec.Core.Example
 import           Test.Hspec.Core.Example.Location
+
+class SomeClass a where
+    someMethod :: a -> IO ()
+
+instance SomeClass () where
 
 data Person = Person {
   name :: String
@@ -16,6 +26,11 @@ data Person = Person {
 
 spec :: Spec
 spec = do
+  describe "parseAssertionFailed" $ do
+    context "with pre-GHC-8.* error message" $ do
+      it "extracts source location" $ do
+        parseAssertionFailed "Foo.hs:4:7-12: Assertion failed\n" `shouldBe` Just (Location "Foo.hs" 4 7)
+
   describe "extractLocation" $ do
     context "with pattern match failure in do expression" $ do
       context "in IO" $ do
@@ -72,6 +87,18 @@ spec = do
         let
           location = Just $ Location __FILE__ (__LINE__ + 1) 39
         Left e <- try $ evaluate (age Person {name = "foo"})
+        extractLocation e `shouldBe` location
+
+    context "with NoMethodError" $ do
+      it "extracts Location" $ do
+        Left e <- try $ someMethod ()
+        extractLocation e `shouldBe` Just (Location __FILE__ 20 10)
+
+    context "with AssertionFailed" $ do
+      it "extracts Location" $ do
+        let
+          location = Just $ Location __FILE__ (__LINE__ + 1) 36
+        Left e <- try . evaluate $ assert False ()
         extractLocation e `shouldBe` location
 
   describe "parseCallStack" $ do

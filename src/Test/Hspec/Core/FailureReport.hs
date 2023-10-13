@@ -9,13 +9,13 @@ import           Prelude ()
 import           Test.Hspec.Core.Compat
 
 #ifndef __GHCJS__
-import           System.SetEnv
+import           System.SetEnv (setEnv)
 import           Test.Hspec.Core.Util (safeTry)
 #endif
 import           System.IO
 import           System.Directory
 import           Test.Hspec.Core.Util (Path)
-import           Test.Hspec.Core.Config.Options (Config(..))
+import           Test.Hspec.Core.Config.Definition (Config(..))
 
 data FailureReport = FailureReport {
   failureReportSeed :: Integer

@@ -4,8 +4,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ConstraintKinds #-}
 
--- |
--- Stability: unstable
+-- NOTE: re-exported from Test.Hspec.Core.Spec
 module Test.Hspec.Core.Tree (
   SpecTree
 , Tree (..)
@@ -13,6 +12,13 @@ module Test.Hspec.Core.Tree (
 , specGroup
 , specItem
 , bimapTree
+, bimapForest
+, filterTree
+, filterForest
+, filterTreeWithLabels
+, filterForestWithLabels
+, pruneTree
+, pruneForest
 , location
 ) where
 
@@ -27,7 +33,7 @@ import           Test.Hspec.Core.Example
 -- | Internal tree data structure
 data Tree c a =
     Node String [Tree c a]
-  | NodeWithCleanup c [Tree c a]
+  | NodeWithCleanup (Maybe Location) c [Tree c a]
   | Leaf a
   deriving (Show, Eq, Functor, Foldable, Traversable)
 
@@ -35,13 +41,48 @@ data Tree c a =
 -- over the type of cleanup actions and the type of the actual spec items.
 type SpecTree a = Tree (ActionWith a) (Item a)
 
+bimapForest :: (a -> b) -> (c -> d) -> [Tree a c] -> [Tree b d]
+bimapForest g f = map (bimapTree g f)
+
 bimapTree :: (a -> b) -> (c -> d) -> Tree a c -> Tree b d
 bimapTree g f = go
   where
     go spec = case spec of
       Node d xs -> Node d (map go xs)
-      NodeWithCleanup cleanup xs -> NodeWithCleanup (g cleanup) (map go xs)
+      NodeWithCleanup loc cleanup xs -> NodeWithCleanup loc (g cleanup) (map go xs)
       Leaf item -> Leaf (f item)
+
+filterTree :: (a -> Bool) -> Tree c a -> Maybe (Tree c a)
+filterTree = filterTreeWithLabels . const
+
+filterForest :: (a -> Bool) -> [Tree c a] -> [Tree c a]
+filterForest = filterForestWithLabels . const
+
+filterTreeWithLabels :: ([String] -> a -> Bool) -> Tree c a -> Maybe (Tree c a)
+filterTreeWithLabels = filterTree_ []
+
+filterForestWithLabels :: ([String] -> a -> Bool) -> [Tree c a] -> [Tree c a]
+filterForestWithLabels = filterForest_ []
+
+filterForest_ :: [String] -> ([String] -> a -> Bool) -> [Tree c a] -> [Tree c a]
+filterForest_ groups = mapMaybe . filterTree_ groups
+
+filterTree_ :: [String] -> ([String] -> a -> Bool) -> Tree c a -> Maybe (Tree c a)
+filterTree_ groups p tree = case tree of
+  Node group xs -> Just $ Node group $ filterForest_ (groups ++ [group]) p xs
+  NodeWithCleanup loc action xs -> Just $ NodeWithCleanup loc action $ filterForest_ groups p xs
+  Leaf item -> Leaf <$> guarded (p groups) item
+
+pruneForest :: [Tree c a] -> [Tree c a]
+pruneForest = mapMaybe pruneTree
+
+pruneTree :: Tree c a -> Maybe (Tree c a)
+pruneTree node = case node of
+  Node group xs -> Node group <$> prune xs
+  NodeWithCleanup loc action xs -> NodeWithCleanup loc action <$> prune xs
+  Leaf{} -> Just node
+  where
+    prune = guarded (not . null) . pruneForest
 
 -- |
 -- @Item@ is used to represent spec items internally.  A spec item consists of:

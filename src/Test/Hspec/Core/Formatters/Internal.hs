@@ -1,22 +1,25 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE RecordWildCards #-}
 module Test.Hspec.Core.Formatters.Internal (
   FormatM
-, FormatConfig(..)
 , runFormatM
 , interpret
 , increaseSuccessCount
 , increasePendingCount
 , addFailMessage
-, finally_
 , formatterToFormat
+#ifdef TEST
+, overwriteWith
+#endif
 ) where
 
 import           Prelude ()
 import           Test.Hspec.Core.Compat
 
 import qualified System.IO as IO
-import           System.IO (Handle)
-import           Control.Exception (AsyncException(..), bracket_, try, throwIO)
+import           System.IO (Handle, stdout)
+import           Control.Exception (bracket_)
 import           System.Console.ANSI
 import           Control.Monad.Trans.State hiding (state, gets, modify)
 import           Control.Monad.IO.Class
@@ -28,38 +31,30 @@ import           Test.Hspec.Core.Formatters.Monad (Environment(..), interpretWit
 import           Test.Hspec.Core.Format
 import           Test.Hspec.Core.Clock
 
-formatterToFormat :: M.Formatter -> FormatConfig -> Format FormatM
-formatterToFormat formatter config = Format {
-  formatRun = \action -> runFormatM config $ do
-    interpret (M.headerFormatter formatter)
-    a <- action `finally_` interpret (M.failedFormatter formatter)
-    interpret (M.footerFormatter formatter)
-    return a
-, formatGroupStarted = \ (nesting, name) -> interpret $ M.exampleGroupStarted formatter nesting name
-, formatGroupDone = \ _ -> interpret (M.exampleGroupDone formatter)
-, formatProgress = \ path progress -> when useColor $ do
-    interpret $ M.exampleProgress formatter path progress
-, formatItem = \ path (Item loc _duration info result) -> do
+formatterToFormat :: M.Formatter -> FormatConfig -> IO Format
+formatterToFormat M.Formatter{..} config = monadic (runFormatM config) $ \ event -> case event of
+  Started -> interpret formatterStarted
+  GroupStarted path -> interpret $ formatterGroupStarted path
+  GroupDone path -> interpret $ formatterGroupDone path
+  Progress path progress -> interpret $ formatterProgress path progress
+  ItemStarted path -> interpret $ formatterItemStarted path
+  ItemDone path item -> do
     clearTransientOutput
-    case result of
-      Success -> do
-        increaseSuccessCount
-        interpret $ M.exampleSucceeded formatter path info
-      Pending reason -> do
-        increasePendingCount
-        interpret $ M.examplePending formatter path info reason
-      Failure err -> do
-        addFailMessage loc path err
-        interpret $ M.exampleFailed formatter path info err
-} where
-    useColor = formatConfigUseColor config
+    case itemResult item of
+      Success {} -> increaseSuccessCount
+      Pending {} -> increasePendingCount
+      Failure loc err -> addFailMessage (loc <|> itemLocation item) path err
+    interpret $ formatterItemDone path item
+  Done _ -> interpret formatterDone
 
 interpret :: M.FormatM a -> FormatM a
 interpret = interpretWith Environment {
   environmentGetSuccessCount = getSuccessCount
 , environmentGetPendingCount = getPendingCount
 , environmentGetFailMessages = getFailMessages
+, environmentGetFinalCount = getItemCount
 , environmentUsedSeed = usedSeed
+, environmentPrintTimes = gets (formatConfigPrintTimes . stateConfig)
 , environmentGetCPUTime = getCPUTime
 , environmentGetRealTime = getRealTime
 , environmentWrite = write
@@ -84,18 +79,9 @@ modify :: (FormatterState -> FormatterState) -> FormatM ()
 modify f = FormatM $ do
   get >>= liftIO . (`modifyIORef'` f)
 
-data FormatConfig = FormatConfig {
-  formatConfigHandle :: Handle
-, formatConfigUseColor :: Bool
-, formatConfigUseDiff :: Bool
-, formatConfigHtmlOutput :: Bool
-, formatConfigPrintCpuTime :: Bool
-, formatConfigUsedSeed :: Integer
-} deriving (Eq, Show)
-
 data FormatterState = FormatterState {
-  stateSuccessCount    :: Int
-, statePendingCount    :: Int
+  stateSuccessCount    :: !Int
+, statePendingCount    :: !Int
 , stateFailMessages    :: [FailureRecord]
 , stateCpuStartTime    :: Maybe Integer
 , stateStartTime       :: Seconds
@@ -107,7 +93,7 @@ getConfig :: (FormatConfig -> a) -> FormatM a
 getConfig f = gets (f . stateConfig)
 
 getHandle :: FormatM Handle
-getHandle = getConfig formatConfigHandle
+getHandle = return stdout
 
 -- | The random seed that is used for QuickCheck.
 usedSeed :: FormatM Integer
@@ -149,12 +135,27 @@ addFailMessage loc p m = modify $ \s -> s {stateFailMessages = FailureRecord loc
 getFailMessages :: FormatM [FailureRecord]
 getFailMessages = reverse `fmap` gets stateFailMessages
 
+-- | Get the number of spec items that will have been encountered when this run
+-- completes (if it is not terminated early).
+getItemCount :: FormatM Int
+getItemCount = getConfig formatConfigItemCount
+
+overwriteWith :: String -> String -> String
+overwriteWith old new
+  | n == 0 = new
+  | otherwise = '\r' : new ++ replicate (n - length new) ' '
+  where
+    n = length old
+
 writeTransient :: String -> FormatM ()
-writeTransient s = do
-  write ("\r" ++ s)
-  modify $ \ state -> state {stateTransientOutput = s}
-  h <- getHandle
-  liftIO $ IO.hFlush h
+writeTransient new = do
+  useColor <- getConfig formatConfigUseColor
+  when (useColor) $ do
+    old <- gets stateTransientOutput
+    write $ old `overwriteWith` new
+    modify $ \ state -> state {stateTransientOutput = new}
+    h <- getHandle
+    liftIO $ IO.hFlush h
 
 clearTransientOutput :: FormatM ()
 clearTransientOutput = do
@@ -244,22 +245,6 @@ diffColorize color cls s = withColor (SetColor layer Dull color) cls $ do
     layer
       | all isSpace s = Background
       | otherwise = Foreground
-
--- |
--- @finally_ actionA actionB@ runs @actionA@ and then @actionB@.  @actionB@ is
--- run even when a `UserInterrupt` occurs during @actionA@.
-finally_ :: FormatM a -> FormatM () -> FormatM a
-finally_ (FormatM actionA) (FormatM actionB) = FormatM . StateT $ \st -> do
-  r <- try (runStateT actionA st)
-  case r of
-    Left e -> do
-      when (e == UserInterrupt) $
-        runStateT actionB st >> return ()
-      throwIO e
-    Right (a, st_) -> do
-      runStateT actionB st_ >>= return . replaceValue a
-  where
-    replaceValue a (_, st) = (a, st)
 
 -- | Get the used CPU time since the test run has been started.
 getCPUTime :: FormatM (Maybe Seconds)
