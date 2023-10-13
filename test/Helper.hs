@@ -14,10 +14,12 @@ module Helper (
 , noOpProgressCallback
 , captureLines
 , normalizeSummary
+, normalizeTimes
 
 , ignoreExitCode
 , ignoreUserInterrupt
 , throwException
+, throwException_
 
 , withEnvironment
 , inTempDirectory
@@ -30,46 +32,51 @@ module Helper (
 import           Prelude ()
 import           Test.Hspec.Core.Compat
 
-import           Data.List
 import           Data.Char
 import           System.Environment (withArgs, getEnvironment)
 import           System.Exit
 import qualified Control.Exception as E
 import           Control.Exception
-import qualified System.Timeout as System
 import           System.IO.Silently
 import           System.SetEnv
 import           System.Directory
 import           System.IO.Temp
 
-import           Test.Hspec.Meta hiding (hspec, hspecResult)
+import           Test.Hspec.Meta hiding (hspec, hspecResult, pending, pendingWith)
 import           Test.QuickCheck hiding (Result(..))
+import qualified Test.HUnit.Lang as HUnit
 
 import qualified Test.Hspec.Core.Spec as H
 import qualified Test.Hspec.Core.Runner as H
 import           Test.Hspec.Core.QuickCheckUtil (mkGen)
 import           Test.Hspec.Core.Clock
-import           Test.Hspec.Core.Example(Result(..), ResultStatus(..), FailureReason(..))
+import           Test.Hspec.Core.Example (Result(..), ResultStatus(..), FailureReason(..))
+import           Test.Hspec.Core.Util
+import qualified Test.Hspec.Core.Format as Format
 
-#if !MIN_VERSION_base(4,7,0)
-deriving instance Eq ErrorCall
-#endif
+import           Data.Orphans()
 
 exceptionEq :: E.SomeException -> E.SomeException -> Bool
 exceptionEq a b
   | Just ea <- E.fromException a, Just eb <- E.fromException b = ea == (eb :: E.ErrorCall)
   | Just ea <- E.fromException a, Just eb <- E.fromException b = ea == (eb :: E.ArithException)
-  | otherwise = undefined
+  | otherwise = throw (HUnit.HUnitFailure Nothing $ HUnit.ExpectedButGot Nothing (formatException b) (formatException a))
 
 deriving instance Eq FailureReason
 deriving instance Eq ResultStatus
 deriving instance Eq Result
 
+deriving instance Eq Format.Result
+deriving instance Eq Format.Item
+
 instance Eq SomeException where
   (==) = exceptionEq
 
-throwException :: IO ()
-throwException = E.throwIO (E.ErrorCall "foobar")
+throwException :: IO a
+throwException = E.throwIO DivideByZero
+
+throwException_ :: IO ()
+throwException_ = throwException
 
 ignoreExitCode :: IO () -> IO ()
 ignoreExitCode action = action `E.catch` \e -> let _ = e :: ExitCode in return ()
@@ -89,14 +96,19 @@ normalizeSummary = map f
     g x | isNumber x = '0'
         | otherwise  = x
 
+normalizeTimes :: [String] -> [String]
+normalizeTimes = map go
+  where
+    go xs = case xs of
+      [] -> []
+      '(' : y : ys | isNumber y, Just zs <- stripPrefix "ms)" $ dropWhile isNumber ys -> "(2ms)" ++ go zs
+      y : ys -> y : go ys
+
 defaultParams :: H.Params
 defaultParams = H.defaultParams {H.paramsQuickCheckArgs = stdArgs {replay = Just (mkGen 23, 0), maxSuccess = 1000}}
 
 noOpProgressCallback :: H.ProgressCallback
 noOpProgressCallback _ = return ()
-
-timeout :: Seconds -> IO a -> IO (Maybe a)
-timeout = System.timeout . toMicroseconds
 
 shouldUseArgs :: HasCallStack => [String] -> (Args -> Bool) -> Expectation
 shouldUseArgs args p = do

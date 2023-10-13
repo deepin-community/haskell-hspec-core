@@ -24,11 +24,12 @@ import           System.IO.Error
 import           System.Exit
 import           System.FilePath
 import           System.Directory
-import           System.Environment (getProgName)
+import           System.Environment (getProgName, getEnvironment)
 import qualified Test.QuickCheck as QC
 
 import           Test.Hspec.Core.Util
 import           Test.Hspec.Core.Config.Options
+import           Test.Hspec.Core.Config.Definition (Config(..), ColorMode(..), defaultConfig, filterOr)
 import           Test.Hspec.Core.FailureReport
 import           Test.Hspec.Core.QuickCheckUtil (mkGen)
 import           Test.Hspec.Core.Example (Params(..), defaultParams)
@@ -67,18 +68,22 @@ configQuickCheckArgs c = qcArgs
   where
     qcArgs = (
         maybe id setSeed (configQuickCheckSeed c)
-      . maybe id setMaxDiscardRatio (configQuickCheckMaxDiscardRatio c)
+      . maybe id setMaxShrinks (configQuickCheckMaxShrinks c)
       . maybe id setMaxSize (configQuickCheckMaxSize c)
+      . maybe id setMaxDiscardRatio (configQuickCheckMaxDiscardRatio c)
       . maybe id setMaxSuccess (configQuickCheckMaxSuccess c)) (paramsQuickCheckArgs defaultParams)
 
     setMaxSuccess :: Int -> QC.Args -> QC.Args
     setMaxSuccess n args = args {QC.maxSuccess = n}
 
+    setMaxDiscardRatio :: Int -> QC.Args -> QC.Args
+    setMaxDiscardRatio n args = args {QC.maxDiscardRatio = n}
+
     setMaxSize :: Int -> QC.Args -> QC.Args
     setMaxSize n args = args {QC.maxSize = n}
 
-    setMaxDiscardRatio :: Int -> QC.Args -> QC.Args
-    setMaxDiscardRatio n args = args {QC.maxDiscardRatio = n}
+    setMaxShrinks :: Int -> QC.Args -> QC.Args
+    setMaxShrinks n args = args {QC.maxShrinks = n}
 
     setSeed :: Integer -> QC.Args -> QC.Args
     setSeed n args = args {QC.replay = Just (mkGen (fromIntegral n), 0)}
@@ -113,10 +118,13 @@ readConfig opts_ args = do
     case ignore of
       True -> return []
       False -> readConfigFiles
-  envVar <- fmap words <$> lookupEnv envVarName
-  case parseOptions opts_ prog configFiles envVar args of
+  env <- getEnvironment
+  let envVar = words <$> lookup envVarName env
+  case parseOptions opts_ prog configFiles envVar env args of
     Left (err, msg) -> exitWithMessage err msg
-    Right opts -> return opts
+    Right (warnings, opts) -> do
+      mapM_ (hPutStrLn stderr) warnings
+      return opts
 
 readFailureReportOnRerun :: Config -> IO (Maybe FailureReport)
 readFailureReportOnRerun config

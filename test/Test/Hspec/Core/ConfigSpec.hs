@@ -1,14 +1,25 @@
 module Test.Hspec.Core.ConfigSpec (spec) where
 
+import           Prelude ()
 import           Helper
+
 import           System.Directory
 import           System.FilePath
 
 import           Test.Hspec.Core.Config
 
 spec :: Spec
-spec = do
-  describe "readConfigFiles" $ around_ (withEnvironment []) $ around_ inTempDirectory $ do
+spec = around_ inTempDirectory $ around_ (withEnvironment [("HOME", "foo")]) $ do
+  describe "readConfig" $ do
+    it "recognizes options from HSPEC_OPTIONS" $ do
+      withEnvironment [("HSPEC_OPTIONS", "--color")] $ do
+        configColorMode <$> readConfig defaultConfig [] `shouldReturn` ColorAlways
+
+    it "recognizes options from HSPEC_*" $ do
+      withEnvironment [("HSPEC_COLOR", "yes")] $ do
+        configColorMode <$> readConfig defaultConfig [] `shouldReturn` ColorAlways
+
+  describe "readConfigFiles" $ do
     it "reads .hspec" $ do
       dir <- getCurrentDirectory
       let name = dir </> ".hspec"

@@ -3,7 +3,9 @@
 {-# LANGUAGE TypeFamilies #-}
 module Test.Hspec.Core.ExampleSpec (spec) where
 
+import           Prelude ()
 import           Helper
+
 import           Mock
 import           Control.Exception
 import           Test.HUnit (assertFailure, assertEqual)
@@ -13,6 +15,7 @@ import           Test.Hspec.Core.Example (Result(..), ResultStatus(..)
   , Location(..)
 #endif
   , FailureReason(..))
+import qualified Test.Hspec.Expectations as H
 import qualified Test.Hspec.Core.Example as H
 import qualified Test.Hspec.Core.Spec as H
 import qualified Test.Hspec.Core.Runner as H
@@ -34,7 +37,7 @@ spec = do
   describe "safeEvaluateExample" $ do
     context "for Expectation" $ do
       it "returns Failure if an expectation does not hold" $ do
-        Result "" (Failure _ msg) <- safeEvaluateExample (23 `shouldBe` (42 :: Int))
+        Result "" (Failure _ msg) <- safeEvaluateExample (23 `H.shouldBe` (42 :: Int))
         msg `shouldBe` ExpectedButGot Nothing "42" "23"
 
       context "when used with `pending`" $ do
@@ -174,7 +177,7 @@ spec = do
         let prop p = property $ \ (x :: Int) (y :: Int) -> (x == 0 && y == 1) ==> p
         context "when used with shouldBe" $ do
           it "shows what falsified it" $ do
-            Result "" (Failure _ err) <- evaluateExample $ prop $ 23 `shouldBe` (42 :: Int)
+            Result "" (Failure _ err) <- evaluateExample $ prop $ 23 `H.shouldBe` (42 :: Int)
             err `shouldBe` ExpectedButGot (Just "Falsifiable (after 1 test):\n  0\n  1") "42" "23"
 
         context "when used with assertEqual" $ do
@@ -189,7 +192,7 @@ spec = do
 
         context "when used with verbose" $ do
           it "includes verbose output" $ do
-            Result info (Failure _ err) <- evaluateExample $ verbose $ (`shouldBe` (23 :: Int))
+            Result info (Failure _ err) <- evaluateExample $ verbose $ (`H.shouldBe` (23 :: Int))
             info `shouldBe` "Failed:\n0"
             err `shouldBe` ExpectedButGot (Just "Falsifiable (after 1 test):\n  0") "23" "0"
 

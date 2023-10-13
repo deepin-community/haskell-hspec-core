@@ -23,9 +23,10 @@ import           System.SetEnv
 import           System.Console.ANSI
 
 import           Test.Hspec.Core.FailureReport (FailureReport(..))
+import qualified Test.Hspec.Expectations as H
 import qualified Test.Hspec.Core.Spec as H
 import qualified Test.Hspec.Core.Runner as H
-import qualified Test.Hspec.Core.Formatters as H (silent)
+import qualified Test.Hspec.Core.Formatters.V2 as V2
 import qualified Test.Hspec.Core.QuickCheck as H
 
 import qualified Test.QuickCheck as QC
@@ -200,16 +201,10 @@ spec = do
           , ""
           , "  To rerun use: --match \"/foo/\""
           , ""
-#if __GLASGOW_HASKELL__ == 800
-          , "WARNING:"
-          , "  Your version of GHC is affected by https://ghc.haskell.org/trac/ghc/ticket/13285."
-          , "  Source locations may not work as expected."
-          , ""
-          , "  Please consider upgrading GHC!"
-          , ""
-#endif
           , "Randomized with seed 23"
           , ""
+          , "Finished in 0.0000 seconds"
+          , "1 example, 1 failure"
           ]
 
       it "throws UserInterrupt" $ do
@@ -308,14 +303,6 @@ spec = do
           , ""
           , "  To rerun use: --match \"/bar/\""
           , ""
-#if __GLASGOW_HASKELL__ == 800
-          , "WARNING:"
-          , "  Your version of GHC is affected by https://ghc.haskell.org/trac/ghc/ticket/13285."
-          , "  Source locations may not work as expected."
-          , ""
-          , "  Please consider upgrading GHC!"
-          , ""
-#endif
           , "Randomized with seed 23"
           , ""
           , "Finished in 0.0000 seconds"
@@ -356,14 +343,6 @@ spec = do
           , ""
           , "  To rerun use: --match \"/foo/bar/\""
           , ""
-#if __GLASGOW_HASKELL__ == 800
-          , "WARNING:"
-          , "  Your version of GHC is affected by https://ghc.haskell.org/trac/ghc/ticket/13285."
-          , "  Source locations may not work as expected."
-          , ""
-          , "  Please consider upgrading GHC!"
-          , ""
-#endif
           , "Randomized with seed 23"
           , ""
           , "Finished in 0.0000 seconds"
@@ -417,7 +396,7 @@ spec = do
       it "shows colorized diffs" $ do
         r <- capture_ . ignoreExitCode . withArgs ["--diff", "--color"] . H.hspec $ do
           H.it "foo" $ do
-            23 `shouldBe` (42 :: Int)
+            23 `H.shouldBe` (42 :: Int)
         r `shouldContain` unlines [
             red ++ "       expected: " ++ reset ++ red ++ "42" ++ reset
           , red ++ "        but got: " ++ reset ++ green ++ "23" ++ reset
@@ -427,10 +406,29 @@ spec = do
       it "it does not show colorized diffs" $ do
         r <- capture_ . ignoreExitCode . withArgs ["--no-diff", "--color"] . H.hspec $ do
           H.it "foo" $ do
-            23 `shouldBe` (42 :: Int)
+            23 `H.shouldBe` (42 :: Int)
         r `shouldContain` unlines [
             red ++ "       expected: " ++ reset ++ "42"
           , red ++ "        but got: " ++ reset ++ "23"
+          ]
+
+    context "with --print-slow-items" $ do
+      it "prints slow items" $ do
+        r <- captureLines . ignoreExitCode . withArgs ["--print-slow-items"] . H.hspec $ do
+          H.it "foo" $ threadDelay 2000
+        normalizeTimes (normalizeSummary r) `shouldBe` [
+            ""
+          , "foo"
+          , ""
+          , "Finished in 0.0000 seconds"
+          , "1 example, 0 failures"
+          , ""
+          , "Slow spec items:"
+#if MIN_VERSION_base(4,8,1)
+          , "  test/Test/Hspec/Core/RunnerSpec.hs:418:11: /foo/ (2ms)"
+#else
+          , "  /foo/ (2ms)"
+#endif
           ]
 
     context "with --format" $ do
@@ -532,7 +530,7 @@ spec = do
 
     it "treats uncaught exceptions as failure" $ do
       hspecResult_  $ do
-        H.it "foobar" throwException
+        H.it "foobar" throwException_
       `shouldReturn` H.Summary 1 1
 
     it "uses the specdoc formatter by default" $ do
@@ -542,7 +540,7 @@ spec = do
       r `shouldBe` "Foo.Bar"
 
     it "can use a custom formatter" $ do
-      r <- capture_ . H.hspecWithResult H.defaultConfig {H.configFormatter = Just H.silent} $ do
+      r <- capture_ . H.hspecWithResult H.defaultConfig {H.configFormat = Just $ V2.formatterToFormat V2.silent} $ do
         H.describe "Foo.Bar" $ do
           H.it "some example" True
       r `shouldBe` ""
@@ -576,6 +574,22 @@ spec = do
         r `shouldBe` H.Summary n 0
         high <- readIORef highRef
         high `shouldBe` j
+
+  describe "colorOutputSupported" $ do
+    it "returns False" $ do
+      withEnvironment [] $ do
+        H.colorOutputSupported H.ColorAuto (return False) `shouldReturn` False
+
+    context "with a terminal device" $ do
+      let isTerminalDevice = return True
+      it "returns True" $ do
+        withEnvironment [] $ do
+          H.colorOutputSupported H.ColorAuto isTerminalDevice `shouldReturn` True
+
+      context "when NO_COLOR is set" $ do
+        it "returns False" $ do
+          withEnvironment [("NO_COLOR", "yes")] $ do
+            H.colorOutputSupported H.ColorAuto isTerminalDevice `shouldReturn` False
 
   describe "rerunAll" $ do
     let

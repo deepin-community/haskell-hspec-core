@@ -3,6 +3,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE RankNTypes #-}
 
 #if MIN_VERSION_base(4,6,0) && !MIN_VERSION_base(4,7,0)
 -- Control.Concurrent.QSem is deprecated in base-4.6.0.*
@@ -14,6 +15,7 @@ module Test.Hspec.Core.Runner.Eval (
 , EvalTree
 , EvalItem(..)
 , runFormatter
+, resultItemIsFailure
 #ifdef TEST
 , runSequentially
 #endif
@@ -30,78 +32,75 @@ import           Control.Concurrent.Async hiding (cancel)
 import           Control.Monad.IO.Class (liftIO)
 import qualified Control.Monad.IO.Class as M
 
-import           Control.Monad.Trans.State hiding (State, state)
+import           Control.Monad.Trans.Reader
 import           Control.Monad.Trans.Class
 
 import           Test.Hspec.Core.Util
 import           Test.Hspec.Core.Spec (Tree(..), Progress, FailureReason(..), Result(..), ResultStatus(..), ProgressCallback)
 import           Test.Hspec.Core.Timer
-import           Test.Hspec.Core.Format (Format(..))
+import           Test.Hspec.Core.Format (Format)
 import qualified Test.Hspec.Core.Format as Format
 import           Test.Hspec.Core.Clock
 import           Test.Hspec.Core.Example.Location
+import           Test.Hspec.Core.Example (safeEvaluate)
 
 -- for compatibility with GHC < 7.10.1
 type Monad m = (Functor m, Applicative m, M.Monad m)
 type MonadIO m = (Monad m, M.MonadIO m)
 
-data EvalConfig m = EvalConfig {
-  evalConfigFormat :: Format m
+data EvalConfig = EvalConfig {
+  evalConfigFormat :: Format
 , evalConfigConcurrentJobs :: Int
 , evalConfigFastFail :: Bool
 }
 
-data State m = State {
-  stateConfig :: EvalConfig m
-, stateSuccessCount :: Int
-, statePendingCount :: Int
-, stateFailures :: [Path]
+data Env = Env {
+  envConfig :: EvalConfig
+, envResults :: IORef [(Path, Format.Item)]
 }
 
-type EvalM m = StateT (State m) m
+formatEvent :: Format.Event -> EvalM ()
+formatEvent event = do
+  format <- asks $ evalConfigFormat . envConfig
+  liftIO $ format event
 
-increaseSuccessCount :: Monad m => EvalM m ()
-increaseSuccessCount = modify $ \state -> state {stateSuccessCount = stateSuccessCount state + 1}
+type EvalM = ReaderT Env IO
 
-increasePendingCount :: Monad m => EvalM m ()
-increasePendingCount = modify $ \state -> state {statePendingCount = statePendingCount state + 1}
+addResult :: Path -> Format.Item -> EvalM ()
+addResult path item = do
+  ref <- asks envResults
+  liftIO $ modifyIORef ref ((path, item) :)
 
-addFailure :: Monad m => Path -> EvalM m ()
-addFailure path = modify $ \state -> state {stateFailures = path : stateFailures state}
+getResults :: EvalM [(Path, Format.Item)]
+getResults = reverse <$> (asks envResults >>= liftIO . readIORef)
 
-getFormat :: Monad m => (Format m -> a) -> EvalM m a
-getFormat format = gets (format . evalConfigFormat . stateConfig)
+reportItem :: Path -> Maybe Location -> EvalM (Seconds, Result)  -> EvalM ()
+reportItem path loc action = do
+  reportItemStarted path
+  action >>= reportResult path loc
 
-reportItem :: Monad m => Path -> Format.Item -> EvalM m ()
-reportItem path item = do
-  case Format.itemResult item of
-    Format.Success {} -> increaseSuccessCount
-    Format.Pending {} -> increasePendingCount
-    Format.Failure {} -> addFailure path
-  format <- getFormat formatItem
-  lift (format path item)
+reportItemStarted :: Path -> EvalM ()
+reportItemStarted = formatEvent . Format.ItemStarted
 
-failureItem :: Maybe Location -> Seconds -> String -> FailureReason -> Format.Item
-failureItem loc duration info err = Format.Item loc duration info (Format.Failure err)
+reportItemDone :: Path -> Format.Item -> EvalM ()
+reportItemDone path item = do
+  addResult path item
+  formatEvent $ Format.ItemDone path item
 
-reportResult :: Monad m => Path -> Maybe Location -> (Seconds, Result) -> EvalM m ()
+reportResult :: Path -> Maybe Location -> (Seconds, Result) -> EvalM ()
 reportResult path loc (duration, result) = do
   case result of
-    Result info status -> case status of
-      Success -> reportItem path (Format.Item loc duration info Format.Success)
-      Pending loc_ reason -> reportItem path (Format.Item (loc_ <|> loc) duration info $ Format.Pending reason)
-      Failure loc_ err@(Error _ e) -> reportItem path (failureItem (loc_ <|> extractLocation e <|> loc) duration info err)
-      Failure loc_ err -> reportItem path (failureItem (loc_ <|> loc) duration info err)
+    Result info status -> reportItemDone path $ Format.Item loc duration info $ case status of
+      Success                      -> Format.Success
+      Pending loc_ reason          -> Format.Pending loc_ reason
+      Failure loc_ err@(Error _ e) -> Format.Failure (loc_ <|> extractLocation e) err
+      Failure loc_ err             -> Format.Failure loc_ err
 
-groupStarted :: Monad m => Path -> EvalM m ()
-groupStarted path = do
-  format <- getFormat formatGroupStarted
-  lift $ format path
+groupStarted :: Path -> EvalM ()
+groupStarted = formatEvent . Format.GroupStarted
 
-groupDone :: Monad m => Path -> EvalM m ()
-groupDone path = do
-  format <- getFormat formatGroupDone
-  lift $ format path
+groupDone :: Path -> EvalM ()
+groupDone = formatEvent . Format.GroupDone
 
 data EvalItem = EvalItem {
   evalItemDescription :: String
@@ -112,31 +111,32 @@ data EvalItem = EvalItem {
 
 type EvalTree = Tree (IO ()) EvalItem
 
-runEvalM :: Monad m => EvalConfig m -> EvalM m () -> m (State m)
-runEvalM config action = execStateT action (State config 0 0 [])
-
 -- | Evaluate all examples of a given spec and produce a report.
-runFormatter :: forall m. MonadIO m => EvalConfig m -> [EvalTree] -> IO (Int, [Path])
+runFormatter :: EvalConfig -> [EvalTree] -> IO ([(Path, Format.Item)])
 runFormatter config specs = do
+  ref <- newIORef []
+
   let
     start = parallelizeTree (evalConfigConcurrentJobs config) specs
     cancel = cancelMany . concatMap toList . map (fmap fst)
+
   E.bracket start cancel $ \ runningSpecs -> do
     withTimer 0.05 $ \ timer -> do
-      state <- formatRun format $ do
-        runEvalM config $
-          run $ map (fmap (fmap (. reportProgress timer) . snd)) runningSpecs
-      let
-        failures = stateFailures state
-        total = stateSuccessCount state + statePendingCount state + length failures
-      return (total, reverse failures)
+
+      format Format.Started
+      runReaderT (run $ map (fmap (fmap (. reportProgress timer) . snd)) runningSpecs) (Env config ref) `E.finally` do
+        results <- reverse <$> readIORef ref
+        format (Format.Done results)
+
+      results <- reverse <$> readIORef ref
+      return results
   where
     format = evalConfigFormat config
 
-    reportProgress :: IO Bool -> Path -> Progress -> m ()
     reportProgress timer path progress = do
-      r <- liftIO timer
-      when r (formatProgress format path progress)
+      r <- timer
+      when r $ do
+        format (Format.Progress path progress)
 
 cancelMany :: [Async a] -> IO ()
 cancelMany asyncs = do
@@ -208,12 +208,12 @@ runParallel Semaphore{..} action = do
 replaceMVar :: MVar a -> a -> IO ()
 replaceMVar mvar p = tryTakeMVar mvar >> putMVar mvar p
 
-run :: forall m. MonadIO m => [RunningTree m] -> EvalM m ()
+run :: [RunningTree IO] -> EvalM ()
 run specs = do
-  fastFail <- gets (evalConfigFastFail . stateConfig)
+  fastFail <- asks (evalConfigFastFail . envConfig)
   sequenceActions fastFail (concatMap foldSpec specs)
   where
-    foldSpec :: RunningTree m -> [EvalM m ()]
+    foldSpec :: RunningTree IO -> [EvalM ()]
     foldSpec = foldTree FoldTree {
       onGroupStarted = groupStarted
     , onGroupDone = groupDone
@@ -221,16 +221,18 @@ run specs = do
     , onLeafe = evalItem
     }
 
-    runCleanup :: [String] -> IO () -> EvalM m ()
-    runCleanup groups action = do
-      (dt, r) <- liftIO $ measure $ safeTry action
-      either (\ e -> reportItem path . failureItem (extractLocation e) dt "" . Error Nothing $ e) return r
+    runCleanup :: Maybe Location -> [String] -> IO () -> EvalM ()
+    runCleanup loc groups action = do
+      r <- liftIO $ measure $ safeEvaluate (action >> return (Result "" Success))
+      case r of
+        (_, Result "" Success) -> return ()
+        _ -> reportItem path loc (return r)
       where
         path = (groups, "afterAll-hook")
 
-    evalItem :: [String] -> RunningItem m -> EvalM m ()
+    evalItem :: [String] -> RunningItem IO -> EvalM ()
     evalItem groups (Item requirement loc action) = do
-      lift (action path) >>= reportResult path loc
+      reportItem path loc $ lift (action path)
       where
         path :: Path
         path = (groups, requirement)
@@ -238,7 +240,7 @@ run specs = do
 data FoldTree c a r = FoldTree {
   onGroupStarted :: Path -> r
 , onGroupDone :: Path -> r
-, onCleanup :: [String] -> c -> r
+, onCleanup :: Maybe Location -> [String] -> c -> r
 , onLeafe :: [String] -> a -> r
 }
 
@@ -251,18 +253,27 @@ foldTree FoldTree{..} = go []
         start = onGroupStarted path
         children = concatMap (go (group : rGroups)) xs
         done =  onGroupDone path
-    go rGroups (NodeWithCleanup action xs) = children ++ [cleanup]
+    go rGroups (NodeWithCleanup loc action xs) = children ++ [cleanup]
       where
         children = concatMap (go rGroups) xs
-        cleanup = onCleanup (reverse rGroups) action
+        cleanup = onCleanup loc (reverse rGroups) action
     go rGroups (Leaf a) = [onLeafe (reverse rGroups) a]
 
-sequenceActions :: Monad m => Bool -> [EvalM m ()] -> EvalM m ()
+sequenceActions :: Bool -> [EvalM ()] -> EvalM ()
 sequenceActions fastFail = go
   where
+    go :: [EvalM ()] -> EvalM ()
     go [] = return ()
     go (action : actions) = do
-      () <- action
-      hasFailures <- (not . null) <$> gets stateFailures
+      action
+      hasFailures <- any resultItemIsFailure <$> getResults
       let stopNow = fastFail && hasFailures
       unless stopNow (go actions)
+
+resultItemIsFailure :: (Path, Format.Item) -> Bool
+resultItemIsFailure = isFailure . Format.itemResult . snd
+  where
+    isFailure r = case r of
+      Format.Success{} -> False
+      Format.Pending{} -> False
+      Format.Failure{} -> True

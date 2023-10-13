@@ -4,6 +4,8 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+
+-- NOTE: re-exported from Test.Hspec.Core.Spec
 module Test.Hspec.Core.Example (
   Example (..)
 , Params (..)
@@ -15,8 +17,12 @@ module Test.Hspec.Core.Example (
 , ResultStatus (..)
 , Location (..)
 , FailureReason (..)
+, safeEvaluate
 , safeEvaluateExample
 ) where
+
+import           Prelude ()
+import           Test.Hspec.Core.Compat
 
 import qualified Test.HUnit.Lang as HUnit
 
@@ -33,7 +39,6 @@ import qualified Test.QuickCheck.Property as QCP
 
 import           Test.Hspec.Core.QuickCheckUtil
 import           Test.Hspec.Core.Util
-import           Test.Hspec.Core.Compat
 import           Test.Hspec.Core.Example.Location
 
 -- | A type class for examples
@@ -88,13 +93,7 @@ instance NFData FailureReason where
 instance Exception ResultStatus
 
 safeEvaluateExample :: Example e => e -> Params -> (ActionWith (Arg e) -> IO ()) -> ProgressCallback -> IO Result
-safeEvaluateExample example params around progress = do
-  r <- safeTry $ forceResult <$> evaluateExample example params around progress
-  return $ case r of
-    Left e | Just result <- fromException e -> Result "" result
-    Left e | Just hunit <- fromException e -> Result "" $ hunitFailureToResult Nothing hunit
-    Left e -> Result "" $ Failure Nothing $ Error Nothing e
-    Right result -> result
+safeEvaluateExample example params around progress = safeEvaluate $ forceResult <$> evaluateExample example params around progress
   where
     forceResult :: Result -> Result
     forceResult r@(Result info status) = info `deepseq` (forceResultStatus status) `seq` r
@@ -104,6 +103,15 @@ safeEvaluateExample example params around progress = do
       Success -> r
       Pending _ m -> m `deepseq` r
       Failure _ m -> m `deepseq` r
+
+safeEvaluate :: IO Result -> IO Result
+safeEvaluate action = do
+  r <- safeTry $ action
+  return $ case r of
+    Left e | Just result <- fromException e -> Result "" result
+    Left e | Just hunit <- fromException e -> Result "" $ hunitFailureToResult Nothing hunit
+    Left e -> Result "" $ Failure Nothing $ Error Nothing e
+    Right result -> result
 
 instance Example Result where
   type Arg Result = ()

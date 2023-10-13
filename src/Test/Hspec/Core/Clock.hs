@@ -1,18 +1,27 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Test.Hspec.Core.Clock (
   Seconds(..)
+, toMilliseconds
 , toMicroseconds
 , getMonotonicTime
 , measure
 , sleep
+, timeout
 ) where
+
+import           Prelude ()
+import           Test.Hspec.Core.Compat
 
 import           Text.Printf
 import           System.Clock
 import           Control.Concurrent
+import qualified System.Timeout as System
 
 newtype Seconds = Seconds Double
-  deriving (Eq, Show, Num, Fractional, PrintfArg)
+  deriving (Eq, Show, Ord, Num, Fractional, PrintfArg)
+
+toMilliseconds :: Seconds -> Int
+toMilliseconds (Seconds s) = floor (s * 1000)
 
 toMicroseconds :: Seconds -> Int
 toMicroseconds (Seconds s) = floor (s * 1000000)
@@ -31,3 +40,6 @@ measure action = do
 
 sleep :: Seconds -> IO ()
 sleep = threadDelay . toMicroseconds
+
+timeout :: Seconds -> IO a -> IO (Maybe a)
+timeout = System.timeout . toMicroseconds
